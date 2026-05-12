@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import os
 import re
 from statistics import mean
@@ -14,6 +15,21 @@ from ..models import Quote, SOURCE_META, empty_quote, now_iso
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 TROY_OUNCE_GRAMS = 31.1034768
+PLAYWRIGHT_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+]
+PLAYWRIGHT_ALLOWED_RESOURCE_TYPES = {"document", "script", "xhr", "fetch"}
+_PLAYWRIGHT_LOCK = asyncio.Lock()
+_PLAYWRIGHT_MANAGER = None
+_PLAYWRIGHT_BROWSER = None
+_PLAYWRIGHT_CONTEXT = None
+_PLAYWRIGHT_CLOSE_TASK: asyncio.Task | None = None
 
 
 def _normal(key: str, value: float, debug: dict[str, Any] | None = None, source_url: str | None = None) -> Quote:
@@ -88,18 +104,64 @@ def _excerpt_after_label(text: str, label: str, length: int = 220) -> str:
     return text[index : index + length]
 
 
-async def _playwright_body_text(url: str, wait_ms: int = 8000) -> str:
-    from playwright.async_api import async_playwright
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(locale="zh-TW")
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(wait_ms)
-            return await page.locator("body").inner_text(timeout=10000)
-        finally:
+async def _close_shared_playwright(delay: float = 2.0) -> None:
+    global _PLAYWRIGHT_MANAGER, _PLAYWRIGHT_BROWSER, _PLAYWRIGHT_CONTEXT
+    await asyncio.sleep(delay)
+    context = _PLAYWRIGHT_CONTEXT
+    browser = _PLAYWRIGHT_BROWSER
+    manager = _PLAYWRIGHT_MANAGER
+    _PLAYWRIGHT_CONTEXT = None
+    _PLAYWRIGHT_BROWSER = None
+    _PLAYWRIGHT_MANAGER = None
+    try:
+        if context:
+            await context.close()
+    except Exception:
+        pass
+    try:
+        if browser:
             await browser.close()
+    except Exception:
+        pass
+    try:
+        if manager:
+            await manager.stop()
+    except Exception:
+        pass
+
+
+async def _new_low_memory_page():
+    global _PLAYWRIGHT_MANAGER, _PLAYWRIGHT_BROWSER, _PLAYWRIGHT_CONTEXT, _PLAYWRIGHT_CLOSE_TASK
+    if _PLAYWRIGHT_CLOSE_TASK and not _PLAYWRIGHT_CLOSE_TASK.done():
+        _PLAYWRIGHT_CLOSE_TASK.cancel()
+        _PLAYWRIGHT_CLOSE_TASK = None
+    if _PLAYWRIGHT_MANAGER is None or _PLAYWRIGHT_BROWSER is None or _PLAYWRIGHT_CONTEXT is None:
+        from playwright.async_api import async_playwright
+
+        _PLAYWRIGHT_MANAGER = await async_playwright().start()
+        _PLAYWRIGHT_BROWSER = await _PLAYWRIGHT_MANAGER.chromium.launch(headless=True, args=PLAYWRIGHT_LAUNCH_ARGS)
+        _PLAYWRIGHT_CONTEXT = await _PLAYWRIGHT_BROWSER.new_context(locale="zh-TW", timezone_id="Asia/Taipei", viewport={"width": 1280, "height": 760})
+
+        async def abort_heavy_assets(route):
+            if route.request.resource_type in PLAYWRIGHT_ALLOWED_RESOURCE_TYPES:
+                await route.continue_()
+            else:
+                await route.abort()
+
+        await _PLAYWRIGHT_CONTEXT.route("**/*", abort_heavy_assets)
+    return await _PLAYWRIGHT_CONTEXT.new_page()
+
+
+async def _playwright_body_text(url: str, wait_ms: int = 8000) -> str:
+    async with _PLAYWRIGHT_LOCK:
+        page = await _new_low_memory_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(min(wait_ms, 9000))
+            return await page.locator("body").inner_text(timeout=8000)
+        finally:
+            await page.close()
+            await _close_shared_playwright(0)
 
 
 async def fetch_max(previous: Quote | None = None) -> Quote:
@@ -506,17 +568,17 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
     except Exception as exc:
         return _failed_with_previous(key, previous, {"fetch_mode": "playwright_unavailable", "error": str(exc), "source_url": url})
 
-    browser = None
     text = ""
     section_text = ""
     selector_used = "body visible text regex"
+    page = None
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(locale="zh-TW")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_url("**/buy-usdt", timeout=10000)
-            await page.wait_for_timeout(5000)
+        async with _PLAYWRIGHT_LOCK:
+            page = await _new_low_memory_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(7000)
+            await page.mouse.wheel(0, 900)
+            await page.wait_for_timeout(3000)
             text = await page.locator("body").inner_text(timeout=10000)
             section_text = text
             selector_used = "body visible text regex"
@@ -536,14 +598,9 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                             break
                 except Exception:
                     continue
-            table_markers = ["?振\t?桀", "?振 ?桀", "?振\n?桀"]
-            for marker in table_markers:
-                marker_index = section_text.find(marker)
-                if marker_index >= 0:
-                    section_text = section_text[marker_index:]
-                    selector_used = f"{selector_used} > merchant table marker"
-                    break
-            await browser.close()
+            await page.close()
+            page = None
+            await _close_shared_playwright(0)
         parsed = parse_okx_cny_prices_from_text(section_text)
         raw_prices: list[float] = parsed["raw_prices"]
         if len(raw_prices) < 3:
@@ -575,8 +632,9 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
         return _normal(key, quote_value, debug, source_url=url)
     except Exception as exc:
         try:
-            if browser:
-                await browser.close()
+            if page:
+                await page.close()
+                await _close_shared_playwright(0)
         except Exception:
             pass
         if section_text or text:
