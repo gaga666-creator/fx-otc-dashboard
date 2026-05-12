@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import re
@@ -192,8 +192,8 @@ async def fetch_pbc(previous: Quote | None = None) -> Quote:
             candidates = []
             for link in soup.find_all("a", href=True):
                 label = link.get_text(" ", strip=True)
-                date_match = re.search(r"(20\d{2})[年\-/\.](\d{1,2})[月\-/\.](\d{1,2})", label)
-                if "中国外汇交易中心" in label and "人民币汇率中间价公告" in label and date_match:
+                date_match = re.search(r"(20\d{2})[撟廄-/\.](\d{1,2})[?-/\.](\d{1,2})", label)
+                if "銝剖憭?鈭斗?銝剖?" in label and "鈭箸?撣??葉?港遠?砍?" in label and date_match:
                     href = urljoin(list_url, link["href"])
                     candidates.append((label, href, date_match.group(0)))
             if not candidates:
@@ -253,7 +253,7 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
             resp = await client.get(url)
             resp.raise_for_status()
             text = BeautifulSoup(resp.text, "lxml").get_text("\n", strip=True)
-        values = _numbers_after_label(text, "黄金9999")
+        values = _numbers_after_label(text, "暺?9999")
         if len(values) < 2:
             raise ValueError("gold9999 row not found in static HTML")
     except Exception as exc:
@@ -261,7 +261,7 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
         try:
             mode = "playwright"
             text = await _playwright_body_text(url)
-            values = _numbers_after_label(text, "黄金9999")
+            values = _numbers_after_label(text, "暺?9999")
             if len(values) < 2:
                 raise ValueError("gold9999 row not found in rendered page")
         except Exception as render_exc:
@@ -272,7 +272,7 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
                 {
                     "error": "; ".join(errors),
                     "error_reason": "gold9999 row not found or Playwright unavailable",
-                    "raw_text_excerpt": _excerpt_after_label(text, "黄金9999", 500) if text else "",
+                    "raw_text_excerpt": _excerpt_after_label(text, "暺?9999", 500) if text else "",
                     "fetch_mode": mode,
                     "source_url": url,
                 },
@@ -286,12 +286,12 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
         "buy_price": buy,
         "sell_price": sell,
         "raw_prices": values[:4],
-        "parsed_row": "黄金9999",
+        "parsed_row": "暺?9999",
         "price_mapping": {
             "raw_prices[0]": "repurchase_price / user_sell_price",
             "raw_prices[1]": "sale_price / user_buy_price",
         },
-        "raw_text_excerpt": _excerpt_after_label(text, "黄金9999"),
+        "raw_text_excerpt": _excerpt_after_label(text, "暺?9999"),
         "fetch_mode": mode,
         "source_url": url,
     }
@@ -324,7 +324,7 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
             resp = await client.get(url)
             resp.raise_for_status()
             text = BeautifulSoup(resp.text, "lxml").get_text("\n", strip=True)
-        values = _numbers_after_label(text, "伦敦金") or _numbers_after_label(text, "London Gold")
+        values = _numbers_after_label(text, "倫敦金") or _numbers_after_label(text, "London Gold")
         if len(values) < 2:
             raise ValueError("london gold row not found in static HTML")
     except Exception as exc:
@@ -332,7 +332,7 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
         try:
             mode = "playwright"
             text = await _playwright_body_text(url)
-            values = _numbers_after_label(text, "伦敦金") or _numbers_after_label(text, "London Gold")
+            values = _numbers_after_label(text, "倫敦金") or _numbers_after_label(text, "London Gold")
             if len(values) < 2:
                 raise ValueError("london gold row not found in rendered page")
         except Exception as render_exc:
@@ -389,7 +389,7 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
                     {
                         "error": "; ".join(errors),
                         "error_reason": "wfbullion row not found and Gold-API fallback failed",
-                        "raw_text_excerpt": _excerpt_after_label(text, "伦敦金", 500) if text else "",
+                        "raw_text_excerpt": _excerpt_after_label(text, "倫敦金", 500) if text else "",
                         "fetch_mode": mode,
                         "source_url": fallback_url,
                     },
@@ -405,8 +405,8 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
         "sell_usd_oz": sell_usd,
         "official_usd_cny": official_usd_cny,
         "raw_prices": values[:4],
-        "parsed_row": "伦敦金",
-        "raw_text_excerpt": _excerpt_after_label(text, "伦敦金"),
+        "parsed_row": "倫敦金",
+        "raw_text_excerpt": _excerpt_after_label(text, "倫敦金"),
         "fetch_mode": mode,
         "source_url": url,
     }
@@ -417,6 +417,82 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
         "london_gold_buy_cny_g": _normal("london_gold_buy_cny_g", buy_cny, debug, source_url=url),
         "london_gold_sell_cny_g": _normal("london_gold_sell_cny_g", sell_cny, debug, source_url=url),
         "london_gold_mid_cny_g": _normal("london_gold_mid_cny_g", mid_cny, debug, source_url=url),
+    }
+
+
+def _normalize_okx_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("\r\n", " ").replace("\n", " ").replace("\t", " ")).strip()
+
+
+def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
+    normalized = _normalize_okx_text(text)
+    section = normalized
+    section_detected = "body_text"
+    header_markers = [
+        "\u5546\u5bb6 \u55ae\u50f9 \u6578\u91cf/\u9650\u984d \u652f\u4ed8\u65b9\u5f0f",
+        "\u5546\u5bb6 \u5355\u4ef7 \u6570\u91cf/\u9650\u989d \u652f\u4ed8\u65b9\u5f0f",
+        "\u5546\u5bb6 \u55ae\u50f9",
+        "\u5546\u5bb6 \u5355\u4ef7",
+        "\u55ae\u50f9 \u6578\u91cf",
+        "\u5355\u4ef7 \u6570\u91cf",
+    ]
+    beginner_markers = ["\u65b0\u624b\u53cb\u597d\u59d4\u8a17\u55ae", "\u65b0\u624b\u53cb\u597d\u59d4\u6258\u5355"]
+    header_positions = [normalized.find(marker) for marker in header_markers if normalized.find(marker) >= 0]
+    if header_positions:
+        start = min(header_positions)
+        section = normalized[start:]
+        section_detected = "general_c2c_list"
+    else:
+        beginner_positions = [normalized.find(marker) for marker in beginner_markers if normalized.find(marker) >= 0]
+        if beginner_positions:
+            start = max(beginner_positions)
+            next_merchant = normalized.find("\u5546\u5bb6", start + 1)
+            if next_merchant >= 0:
+                section = normalized[next_merchant:]
+                section_detected = "after_beginner_merchant_section"
+            else:
+                section_detected = "beginner_section_not_used"
+
+    parser_patterns: list[tuple[str, re.Pattern[str]]] = [
+        ("price_before_cny", re.compile(r"(?<!\d)(6\.\d{2,4})\s*CNY", re.I)),
+        ("cny_before_price", re.compile(r"CNY\s*(6\.\d{2,4})(?!\d)", re.I)),
+        ("unit_price_label", re.compile(r"\u55ae\u50f9\s*(6\.\d{2,4})(?!\d)|\u5355\u4ef7\s*(6\.\d{2,4})(?!\d)")),
+        ("price_label", re.compile(r"\u50f9\u683c\s*(6\.\d{2,4})(?!\d)|\u4ef7\u683c\s*(6\.\d{2,4})(?!\d)")),
+        ("price_near_cny_forward", re.compile(r"(?<!\d)(6\.\d{2,4})(?!\d).{0,20}?CNY", re.I)),
+        ("price_near_cny_backward", re.compile(r"CNY.{0,20}?(6\.\d{2,4})(?!\d)", re.I)),
+    ]
+    raw_prices: list[float] = []
+    parser_patterns_used: list[str] = []
+    seen_spans: set[tuple[int, int]] = set()
+    for pattern_name, pattern in parser_patterns:
+        for match in pattern.finditer(section):
+            price_text = next((group for group in match.groups() if group), None)
+            if not price_text:
+                continue
+            try:
+                price = float(price_text)
+            except ValueError:
+                continue
+            if not 6.0 <= price <= 8.0:
+                continue
+            span = match.span()
+            if span in seen_spans:
+                continue
+            raw_prices.append(price)
+            seen_spans.add(span)
+            if pattern_name not in parser_patterns_used:
+                parser_patterns_used.append(pattern_name)
+            if len(raw_prices) >= 10:
+                break
+        if len(raw_prices) >= 10:
+            break
+
+    return {
+        "raw_prices": raw_prices[:10],
+        "sample_count": len(raw_prices[:10]),
+        "parser_patterns_used": parser_patterns_used,
+        "normalized_text_excerpt": section[:1200],
+        "section_detected": section_detected,
     }
 
 
@@ -431,6 +507,9 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
         return _failed_with_previous(key, previous, {"fetch_mode": "playwright_unavailable", "error": str(exc), "source_url": url})
 
     browser = None
+    text = ""
+    section_text = ""
+    selector_used = "body visible text regex"
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -457,7 +536,7 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                             break
                 except Exception:
                     continue
-            table_markers = ["商家\t單價", "商家 單價", "商家\n單價"]
+            table_markers = ["?振\t?桀", "?振 ?桀", "?振\n?桀"]
             for marker in table_markers:
                 marker_index = section_text.find(marker)
                 if marker_index >= 0:
@@ -465,30 +544,29 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                     selector_used = f"{selector_used} > merchant table marker"
                     break
             await browser.close()
-        raw_prices: list[float] = []
-        for match in re.finditer(r"(?<!\d)(6\.\d{2,4})(?!\d)", section_text):
-            price = float(match.group(1))
-            if 6.0 <= price <= 8.0:
-                raw_prices.append(price)
-            if len(raw_prices) >= 10:
-                break
-        if not raw_prices:
+        parsed = parse_okx_cny_prices_from_text(section_text)
+        raw_prices: list[float] = parsed["raw_prices"]
+        if len(raw_prices) < 3:
             raise ValueError("no visible CNY seller prices found")
-        section_detected = "general_c2c_list" if ("USDT" in section_text and ("CNY" in section_text or "人民幣" in section_text)) else "unknown"
-        suspicious = section_detected == "unknown" or selector_used == "body visible text regex"
+        section_detected = parsed["section_detected"]
+        suspicious = section_detected not in {"general_c2c_list", "after_beginner_merchant_section"} or selector_used == "body visible text regex"
         debug = {
             "sample_count": len(raw_prices),
             "raw_prices": raw_prices,
             "fetch_mode": "playwright",
             "source_url": url,
             "raw_text_excerpt": section_text[:1000],
+            "normalized_text_excerpt": parsed["normalized_text_excerpt"],
             "selector_used": selector_used,
             "section_detected": section_detected,
+            "parser_patterns_used": parsed["parser_patterns_used"],
+            "error_reason": None,
             "validation": {
                 "url_contains_buy_usdt": "buy-usdt" in url,
                 "contains_usdt": "USDT" in section_text,
-                "contains_cny": "CNY" in section_text or "人民幣" in section_text,
-                "price_method": "average first 10 visible 6.x prices",
+                "contains_cny": "CNY" in section_text,
+                "price_method": "average first 10 normalized text prices near CNY",
+                "minimum_sample_count": 3,
             },
         }
         quote_value = mean(raw_prices)
@@ -501,8 +579,57 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                 await browser.close()
         except Exception:
             pass
+        if section_text or text:
+            parsed = parse_okx_cny_prices_from_text(section_text or text)
+            raw_prices = parsed["raw_prices"]
+            if len(raw_prices) >= 3:
+                debug = {
+                    "sample_count": parsed["sample_count"],
+                    "raw_prices": raw_prices,
+                    "fetch_mode": "playwright",
+                    "source_url": url,
+                    "raw_text_excerpt": (section_text or text)[:1200],
+                    "normalized_text_excerpt": parsed["normalized_text_excerpt"],
+                    "selector_used": selector_used,
+                    "section_detected": parsed["section_detected"],
+                    "parser_patterns_used": parsed["parser_patterns_used"],
+                    "error_reason": None,
+                    "playwright_error": str(exc),
+                    "validation": {
+                        "url_contains_buy_usdt": "buy-usdt" in url,
+                        "contains_usdt": "USDT" in (section_text or text),
+                        "contains_cny": "CNY" in (section_text or text),
+                        "price_method": "average first 10 normalized text prices near CNY after Playwright error",
+                        "minimum_sample_count": 3,
+                    },
+                }
+                return _normal(key, mean(raw_prices[:10]), debug, source_url=url)
+            return _failed_with_previous(
+                key,
+                previous,
+                {
+                    "sample_count": parsed["sample_count"],
+                    "raw_prices": raw_prices,
+                    "fetch_mode": "playwright",
+                    "source_url": url,
+                    "raw_text_excerpt": (section_text or text)[:1200],
+                    "normalized_text_excerpt": parsed["normalized_text_excerpt"],
+                    "selector_used": selector_used,
+                    "section_detected": parsed["section_detected"],
+                    "parser_patterns_used": parsed["parser_patterns_used"],
+                    "error": str(exc),
+                    "error_reason": "fewer than 3 qualified OKX CNY/USDT prices found after Playwright error",
+                },
+            )
         return _failed_with_previous(
             key,
             previous,
-            {"sample_count": 0, "raw_prices": [], "fetch_mode": "playwright", "source_url": url, "error": str(exc)},
+            {
+                "sample_count": 0,
+                "raw_prices": [],
+                "fetch_mode": "playwright",
+                "source_url": url,
+                "error": str(exc),
+                "error_reason": "OKX Playwright text unavailable or parser found fewer than 3 prices",
+            },
         )
