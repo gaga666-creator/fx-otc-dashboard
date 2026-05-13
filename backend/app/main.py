@@ -126,7 +126,6 @@ async def ensure_initial_data() -> None:
 
 @app.get("/api/rates/latest")
 async def latest_rates() -> dict[str, Any]:
-    await ensure_initial_data()
     quotes = db.get_latest()
     return {
         **{key: quotes[key].public() for key in SOURCE_META},
@@ -164,7 +163,6 @@ def fmt(value: float | None, digits: int = 4) -> str:
 
 @app.get("/api/telegram/summary", response_class=PlainTextResponse)
 async def telegram_summary() -> str:
-    await ensure_initial_data()
     quotes = db.get_latest()
     derived = derive(quotes)
     return "\n".join(

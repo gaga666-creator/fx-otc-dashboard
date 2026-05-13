@@ -87,6 +87,23 @@ def get_latest() -> dict[str, Quote]:
 def save_quotes(quotes: Iterable[Quote], refreshed_at: str) -> None:
     with connect() as conn:
         for quote in quotes:
+            existing = conn.execute(
+                "SELECT * FROM latest_quotes WHERE source_key = ?",
+                (quote.key,),
+            ).fetchone()
+            if quote.value is None and quote.status in {"unavailable", "error"} and existing and existing["value"] is not None:
+                existing_debug = json.loads(existing["debug_json"] or "{}")
+                merged_debug = dict(existing_debug)
+                merged_debug.update(quote.debug)
+                quote = Quote(
+                    key=quote.key,
+                    value=existing["value"],
+                    status="stale",
+                    source=quote.source,
+                    source_url=existing["source_url"] or quote.source_url,
+                    last_success_time=existing["last_success_time"],
+                    debug=merged_debug,
+                )
             conn.execute(
                 """
                 INSERT INTO latest_quotes
@@ -147,4 +164,3 @@ def snapshots(hours: int = 168) -> list[dict]:
             (f"-{hours} hours",),
         ).fetchall()
     return [dict(row) for row in rows]
-
