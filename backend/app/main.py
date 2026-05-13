@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -16,6 +17,8 @@ from .models import Quote, SOURCE_META, now_iso
 
 
 load_dotenv()
+logger = logging.getLogger("fx_otc_dashboard")
+_REFRESH_LOCK = asyncio.Lock()
 
 cors_origins = [
     origin.strip()
@@ -36,6 +39,16 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup() -> None:
     db.init_db()
+    asyncio.create_task(startup_refresh())
+
+
+async def startup_refresh() -> None:
+    logger.info("startup refresh started")
+    try:
+        await refresh_all()
+        logger.info("startup refresh success")
+    except Exception:
+        logger.exception("startup refresh failed")
 
 
 def _round(value: float | None, digits: int = 6) -> float | None:
@@ -81,41 +94,102 @@ def chart_history() -> list[dict[str, Any]]:
     return output
 
 
-async def refresh_all() -> dict[str, Any]:
-    previous = db.get_latest()
-    bot_task = fetch_bot_rates(previous)
-    max_task = fetch_max(previous.get("max_usdt_twd"))
-    pbc_task = fetch_pbc(previous.get("official_usd_cny"))
-    okx_task = fetch_okx(previous.get("okx_cny_usdt"))
-    usdt_ref_task = fetch_usdt_usd_ref(previous.get("usdt_usd_ref"))
-    gold_9999_task = fetch_gold_9999(previous)
-    max_quote, bot_quotes, pbc_quote, okx_quote, usdt_ref_quote, gold_9999_quotes = await asyncio.gather(
-        max_task,
-        bot_task,
-        pbc_task,
-        okx_task,
-        usdt_ref_task,
-        gold_9999_task,
+def failed_quote(key: str, previous: Quote | None, error: BaseException | str) -> Quote:
+    message = str(error)
+    meta = SOURCE_META[key]
+    debug = dict(previous.debug if previous else {})
+    debug.update({"error": message, "error_reason": message})
+    if previous and previous.value is not None and previous.last_success_time:
+        return Quote(
+            key=key,
+            value=previous.value,
+            status="stale",
+            source=meta["source"],
+            source_url=previous.source_url or meta["source_url"],
+            last_success_time=previous.last_success_time,
+            debug=debug,
+        )
+    return Quote(
+        key=key,
+        value=None,
+        status="unavailable",
+        source=meta["source"],
+        source_url=meta["source_url"],
+        last_success_time=None,
+        debug=debug,
     )
-    official_for_gold = pbc_quote.value if pbc_quote.status in {"normal", "stale"} else previous.get("official_usd_cny").value if previous.get("official_usd_cny") else None
-    london_gold_quotes = await fetch_london_gold(previous, official_for_gold)
-    quotes: dict[str, Quote] = {
-        "max_usdt_twd": max_quote,
-        **bot_quotes,
-        "official_usd_cny": pbc_quote,
-        "okx_cny_usdt": okx_quote,
-        "usdt_usd_ref": usdt_ref_quote,
-        **gold_9999_quotes,
-        **london_gold_quotes,
-    }
-    refreshed_at = now_iso()
-    db.save_quotes(quotes.values(), refreshed_at)
-    result = {
-        "refreshed_at": refreshed_at,
-        "sources": {key: {"status": quote.status, "value": quote.value, "debug": quote.debug} for key, quote in quotes.items()},
-    }
-    db.save_refresh_log(refreshed_at, result)
-    return result
+
+
+def ensure_error_reason(quote: Quote) -> Quote:
+    if quote.status in {"unavailable", "error", "stale"} and not quote.debug.get("error_reason"):
+        error = quote.debug.get("error") or quote.debug.get("errors")
+        if error:
+            quote.debug["error_reason"] = error if isinstance(error, str) else "; ".join(map(str, error))
+    return quote
+
+
+def ensure_error_reasons(quotes: dict[str, Quote]) -> dict[str, Quote]:
+    return {key: ensure_error_reason(quote) for key, quote in quotes.items()}
+
+
+async def refresh_all() -> dict[str, Any]:
+    async with _REFRESH_LOCK:
+        previous = db.get_latest()
+        results = await asyncio.gather(
+            fetch_max(previous.get("max_usdt_twd")),
+            fetch_bot_rates(previous),
+            fetch_pbc(previous.get("official_usd_cny")),
+            fetch_okx(previous.get("okx_cny_usdt")),
+            fetch_usdt_usd_ref(previous.get("usdt_usd_ref")),
+            fetch_gold_9999(previous),
+            return_exceptions=True,
+        )
+        max_result, bot_result, pbc_result, okx_result, usdt_result, gold_result = results
+        max_quote = max_result if isinstance(max_result, Quote) else failed_quote("max_usdt_twd", previous.get("max_usdt_twd"), max_result)
+        bot_quotes = bot_result if isinstance(bot_result, dict) else {
+            "usd_twd_mid": failed_quote("usd_twd_mid", previous.get("usd_twd_mid"), bot_result),
+            "cny_twd_mid": failed_quote("cny_twd_mid", previous.get("cny_twd_mid"), bot_result),
+        }
+        pbc_quote = pbc_result if isinstance(pbc_result, Quote) else failed_quote("official_usd_cny", previous.get("official_usd_cny"), pbc_result)
+        okx_quote = okx_result if isinstance(okx_result, Quote) else failed_quote("okx_cny_usdt", previous.get("okx_cny_usdt"), okx_result)
+        usdt_ref_quote = usdt_result if isinstance(usdt_result, Quote) else failed_quote("usdt_usd_ref", previous.get("usdt_usd_ref"), usdt_result)
+        gold_9999_quotes = gold_result if isinstance(gold_result, dict) else {
+            key: failed_quote(key, previous.get(key), gold_result)
+            for key in ["gold_9999_buy_cny_g", "gold_9999_sell_cny_g", "gold_9999_mid_cny_g"]
+        }
+        official_for_gold = pbc_quote.value if pbc_quote.status in {"normal", "stale"} else previous.get("official_usd_cny").value if previous.get("official_usd_cny") else None
+        try:
+            london_gold_quotes = await fetch_london_gold(previous, official_for_gold)
+        except Exception as exc:
+            london_gold_quotes = {
+                key: failed_quote(key, previous.get(key), exc)
+                for key in [
+                    "london_gold_buy_usd_oz",
+                    "london_gold_sell_usd_oz",
+                    "london_gold_mid_usd_oz",
+                    "london_gold_buy_cny_g",
+                    "london_gold_sell_cny_g",
+                    "london_gold_mid_cny_g",
+                ]
+            }
+        quotes: dict[str, Quote] = ensure_error_reasons({
+            "max_usdt_twd": max_quote,
+            **bot_quotes,
+            "official_usd_cny": pbc_quote,
+            "okx_cny_usdt": okx_quote,
+            "usdt_usd_ref": usdt_ref_quote,
+            **gold_9999_quotes,
+            **london_gold_quotes,
+        })
+        refreshed_at = now_iso()
+        db.save_quotes(quotes.values(), refreshed_at)
+        saved_quotes = db.get_latest()
+        result = {
+            "refreshed_at": refreshed_at,
+            "sources": {key: {"status": quote.status, "value": quote.value, "debug": quote.debug} for key, quote in saved_quotes.items()},
+        }
+        db.save_refresh_log(refreshed_at, result)
+        return result
 
 
 async def ensure_initial_data() -> None:
@@ -141,6 +215,11 @@ async def latest_rates() -> dict[str, Any]:
 
 @app.post("/api/admin/refresh")
 async def admin_refresh() -> dict[str, Any]:
+    return await refresh_all()
+
+
+@app.get("/api/admin/refresh-now")
+async def admin_refresh_now() -> dict[str, Any]:
     return await refresh_all()
 
 

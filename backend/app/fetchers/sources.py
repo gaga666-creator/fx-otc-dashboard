@@ -254,8 +254,8 @@ async def fetch_pbc(previous: Quote | None = None) -> Quote:
             candidates = []
             for link in soup.find_all("a", href=True):
                 label = link.get_text(" ", strip=True)
-                date_match = re.search(r"(20\d{2})[撟廄-/\.](\d{1,2})[?-/\.](\d{1,2})", label)
-                if "銝剖憭?鈭斗?銝剖?" in label and "鈭箸?撣??葉?港遠?砍?" in label and date_match:
+                date_match = re.search(r"(20\d{2})[-/\.年](\d{1,2})[-/\.月](\d{1,2})", label)
+                if ("人民币汇率中间价" in label or ("人民币" in label and "汇率" in label and "中间价" in label)) and date_match:
                     href = urljoin(list_url, link["href"])
                     candidates.append((label, href, date_match.group(0)))
             if not candidates:
