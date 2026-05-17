@@ -309,11 +309,11 @@ function RouteStatusDot({ status }) {
 
 function MarketTape({ data }) {
   const items = [
-    ["??", "USD/CNY", pickQuote(data, "official_usd_cny"), "https://www.pbc.gov.cn/zhengcehuobisi/125207/125217/125925/index.html"],
+    ["PBC", "USD/CNY", pickQuote(data, "official_usd_cny"), "https://www.pbc.gov.cn/zhengcehuobisi/125207/125217/125925/index.html"],
     ["OKX", "CNY/USDT", pickQuote(data, "okx_cny_usdt"), "https://www.okx.com/zh-hant/p2p-block/cny/buy-usdt"],
-    ["?? USD", "USD/TWD", pickQuote(data, "usd_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
+    ["BOT USD", "USD/TWD", pickQuote(data, "usd_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
     ["MAX", "TWD/USDT", pickQuote(data, "max_usdt_twd"), "https://max.maicoin.com/markets/usdttwd"],
-    ["?? CNY", "CNY/TWD", pickQuote(data, "cny_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
+    ["BOT CNY", "CNY/TWD", pickQuote(data, "cny_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
     ["Coinbase", "USDT/USD", pickQuote(data, "usdt_usd_ref"), "https://exchange.coinbase.com/trade/USDT-USD"],
   ];
   return (

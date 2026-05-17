@@ -177,6 +177,49 @@ def parse_beijingrtj_gold_prices(text: str) -> dict[str, Any]:
     }
 
 
+def parse_quoteh5_gold_9999_prices(text: str) -> dict[str, Any]:
+    normalized = _compact_text(text)
+    row_match = re.search(
+        r"(?:黄金|黃金|Gold)\s*9999.{0,80}?(\d{3,5}(?:\.\d{1,4})?)\D+(\d{3,5}(?:\.\d{1,4})?)",
+        normalized,
+        re.I,
+    )
+    if not row_match:
+        row_match = re.search(
+            r"(?:9999).{0,80}?(\d{3,5}(?:\.\d{1,4})?)\D+(\d{3,5}(?:\.\d{1,4})?)",
+            normalized,
+            re.I,
+        )
+    raw_prices = [
+        float(value)
+        for value in re.findall(r"(?<!\d)(\d{3,5}(?:\.\d{1,4})?)(?!\d)", normalized)
+        if 500 <= float(value) <= 1500
+    ]
+    if not row_match:
+        return {
+            "buy_price": None,
+            "sell_price": None,
+            "mid_price": None,
+            "raw_prices": raw_prices[:12],
+            "parser_patterns_used": [],
+            "raw_text_excerpt": normalized[:500],
+        }
+    first = float(row_match.group(1))
+    second = float(row_match.group(2))
+    if not (500 <= first <= 1500 and 500 <= second <= 1500):
+        first = second = None
+    buy = max(first, second) if first is not None and second is not None else None
+    sell = min(first, second) if first is not None and second is not None else None
+    return {
+        "buy_price": buy,
+        "sell_price": sell,
+        "mid_price": (buy + sell) / 2 if buy is not None and sell is not None else None,
+        "raw_prices": raw_prices[:12],
+        "parser_patterns_used": ["quoteh5_gold9999_row_first_two_prices"],
+        "raw_text_excerpt": normalized[max(row_match.start() - 80, 0) : row_match.end() + 160],
+    }
+
+
 async def _close_shared_playwright(delay: float = 2.0) -> None:
     global _PLAYWRIGHT_MANAGER, _PLAYWRIGHT_BROWSER, _PLAYWRIGHT_CONTEXT
     await asyncio.sleep(delay)
@@ -378,45 +421,68 @@ async def fetch_usdt_usd_ref(previous: Quote | None = None) -> Quote:
 
 async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str, Quote]:
     keys = ["gold_9999_buy_cny_g", "gold_9999_sell_cny_g", "gold_9999_mid_cny_g"]
-    url = SOURCE_META["gold_9999_mid_cny_g"]["source_url"]
+    primary_url = SOURCE_META["gold_9999_mid_cny_g"]["source_url"]
+    fallback_url = "https://i.jzj9999.com/quoteh5"
     errors: list[str] = []
     text = ""
     mode = "httpx"
     parsed: dict[str, Any] = {}
-    try:
+    source_url = primary_url
+    fallback_used = False
+
+    async def fetch_text_with_httpx(source_url: str) -> str:
         headers = {"User-Agent": "Mozilla/5.0 FX OTC Dashboard"}
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True, headers=headers) as client:
-            resp = await client.get(url)
+            resp = await client.get(source_url)
             resp.raise_for_status()
-            text = BeautifulSoup(resp.text, "lxml").get_text("\n", strip=True)
-        parsed = parse_beijingrtj_gold_prices(text)
-        if parsed.get("buy_price") is None or parsed.get("sell_price") is None:
-            raise ValueError("beijingrtj gold buy/sell price not found in static HTML")
-    except Exception as exc:
-        errors.append(f"httpx: {exc}")
+            return BeautifulSoup(resp.text, "lxml").get_text("\n", strip=True)
+
+    attempts = [
+        (primary_url, parse_beijingrtj_gold_prices, "beijingrtj"),
+        (fallback_url, parse_quoteh5_gold_9999_prices, "quoteh5"),
+    ]
+    for attempt_url, parser, label in attempts:
+        source_url = attempt_url
         try:
-            mode = "playwright"
-            text = await _playwright_body_text(url)
-            parsed = parse_beijingrtj_gold_prices(text)
+            mode = f"httpx:{label}"
+            text = await fetch_text_with_httpx(attempt_url)
+            parsed = parser(text)
             if parsed.get("buy_price") is None or parsed.get("sell_price") is None:
-                raise ValueError("beijingrtj gold buy/sell price not found in rendered page")
-        except Exception as render_exc:
-            errors.append(f"playwright: {render_exc}")
-            return _failed_group(
-                keys,
-                previous,
-                {
-                    "error": "; ".join(errors),
-                    "error_reason": "beijingrtj gold buy/sell price not found or Playwright unavailable",
-                    "raw_text_excerpt": parsed.get("raw_text_excerpt") or _compact_text(text)[:500] if text else "",
-                    "raw_prices": parsed.get("raw_prices", []),
-                    "buy_price": parsed.get("buy_price"),
-                    "sell_price": parsed.get("sell_price"),
-                    "mid_price": parsed.get("mid_price"),
-                    "fetch_mode": mode,
-                    "source_url": url,
-                },
-            )
+                raise ValueError(f"{label} gold buy/sell price not found in static HTML")
+            fallback_used = attempt_url == fallback_url
+            break
+        except Exception as exc:
+            errors.append(f"httpx:{label}: {exc}")
+            try:
+                mode = f"playwright:{label}"
+                text = await _playwright_body_text(attempt_url)
+                parsed = parser(text)
+                if parsed.get("buy_price") is None or parsed.get("sell_price") is None:
+                    raise ValueError(f"{label} gold buy/sell price not found in rendered page")
+                fallback_used = attempt_url == fallback_url
+                break
+            except Exception as render_exc:
+                errors.append(f"playwright:{label}: {render_exc}")
+                parsed = parsed or {}
+    else:
+        return _failed_group(
+            keys,
+            previous,
+            {
+                "error": "; ".join(errors),
+                "error_reason": "gold9999 buy/sell price not found in primary or fallback source",
+                "primary_source_url": primary_url,
+                "fallback_source_url": fallback_url,
+                "fallback_used": False,
+                "raw_text_excerpt": parsed.get("raw_text_excerpt") or _compact_text(text)[:500] if text else "",
+                "raw_prices": parsed.get("raw_prices", []),
+                "buy_price": parsed.get("buy_price"),
+                "sell_price": parsed.get("sell_price"),
+                "mid_price": parsed.get("mid_price"),
+                "fetch_mode": mode,
+                "source_url": source_url,
+            },
+        )
 
     buy = parsed["buy_price"]
     sell = parsed["sell_price"]
@@ -426,17 +492,20 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
         "sell_price": sell,
         "mid_price": mid,
         "raw_prices": parsed.get("raw_prices", []),
-        "parsed_row": "beijingrtj gold buy/sell labels",
+        "parsed_row": "gold9999 buy/sell row",
         "parser_patterns_used": parsed.get("parser_patterns_used", []),
         "raw_text_excerpt": parsed.get("raw_text_excerpt") or _compact_text(text)[:500],
         "error_reason": None,
         "fetch_mode": mode,
-        "source_url": url,
+        "source_url": source_url,
+        "primary_source_url": primary_url,
+        "fallback_source_url": fallback_url,
+        "fallback_used": fallback_used,
     }
     return {
-        "gold_9999_buy_cny_g": _normal("gold_9999_buy_cny_g", buy, debug, source_url=url),
-        "gold_9999_sell_cny_g": _normal("gold_9999_sell_cny_g", sell, debug, source_url=url),
-        "gold_9999_mid_cny_g": _normal("gold_9999_mid_cny_g", mid, debug, source_url=url),
+        "gold_9999_buy_cny_g": _normal("gold_9999_buy_cny_g", buy, debug, source_url=source_url),
+        "gold_9999_sell_cny_g": _normal("gold_9999_sell_cny_g", sell, debug, source_url=source_url),
+        "gold_9999_mid_cny_g": _normal("gold_9999_mid_cny_g", mid, debug, source_url=source_url),
     }
 
 
@@ -651,9 +720,26 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
         "raw_prices": raw_prices[:5],
         "sample_count": len(raw_prices[:5]),
         "parser_patterns_used": parser_patterns_used,
-        "normalized_text_excerpt": section[:1200],
+        "normalized_text_excerpt": section[:1500],
         "section_detected": section_detected,
     }
+
+
+async def _okx_page_text_and_html(page) -> tuple[str, str, list[str]]:
+    errors: list[str] = []
+    body_text = ""
+    html = ""
+    try:
+        body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    except Exception as exc:
+        errors.append(f"document.body.innerText: {exc}")
+    try:
+        html = await page.content()
+    except Exception as exc:
+        errors.append(f"page.content: {exc}")
+    if not body_text and html:
+        body_text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+    return body_text or "", html or "", errors
 
 
 async def fetch_okx(previous: Quote | None = None) -> Quote:
@@ -667,17 +753,23 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
         return _failed_with_previous(key, previous, {"fetch_mode": "playwright_unavailable", "error": str(exc), "source_url": url})
 
     text = ""
+    html = ""
     section_text = ""
     selector_used = "body visible text regex"
+    page_text_errors: list[str] = []
     page = None
     try:
         async with _PLAYWRIGHT_LOCK:
             page = await _new_low_memory_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(7000)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(4000)
             await page.mouse.wheel(0, 900)
-            await page.wait_for_timeout(3000)
-            text = await page.locator("body").inner_text(timeout=10000)
+            await page.wait_for_timeout(1000)
+            text, html, page_text_errors = await _okx_page_text_and_html(page)
             section_text = text
             selector_used = "body visible text regex"
             for selector in [
@@ -689,7 +781,10 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                 try:
                     locator = page.locator(selector).first
                     if await locator.count():
-                        candidate = await locator.inner_text(timeout=2000)
+                        try:
+                            candidate = await locator.inner_text(timeout=2000)
+                        except Exception:
+                            candidate = ""
                         if "USDT" in candidate and re.search(r"(?<!\d)(6\.\d{2,4})(?!\d)", candidate):
                             section_text = candidate
                             selector_used = selector
@@ -699,7 +794,8 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
             await page.close()
             page = None
             await _close_shared_playwright(0)
-        parsed = parse_okx_cny_prices_from_text(section_text)
+        parse_text = section_text or text or BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+        parsed = parse_okx_cny_prices_from_text(parse_text)
         raw_prices: list[float] = parsed["raw_prices"]
         if len(raw_prices) < 3:
             raise ValueError("no visible CNY seller prices found")
@@ -710,16 +806,18 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
             "raw_prices": raw_prices,
             "fetch_mode": "playwright",
             "source_url": url,
-            "raw_text_excerpt": section_text[:1000],
+            "raw_text_excerpt": parse_text[:1000],
+            "body_text_length": len(text or ""),
+            "html_length": len(html or ""),
             "normalized_text_excerpt": parsed["normalized_text_excerpt"],
             "selector_used": selector_used,
             "section_detected": section_detected,
             "parser_patterns_used": parsed["parser_patterns_used"],
-            "error_reason": None,
+            "error_reason": "; ".join(page_text_errors) if page_text_errors else None,
             "validation": {
                 "url_contains_buy_usdt": "buy-usdt" in url,
-                "contains_usdt": "USDT" in section_text,
-                "contains_cny": "CNY" in section_text,
+                "contains_usdt": "USDT" in parse_text,
+                "contains_cny": "CNY" in parse_text,
                 "price_method": "average first 5 normalized text prices near CNY/USDT context",
                 "minimum_sample_count": 3,
             },
@@ -735,8 +833,9 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                 await _close_shared_playwright(0)
         except Exception:
             pass
-        if section_text or text:
-            parsed = parse_okx_cny_prices_from_text(section_text or text)
+        if section_text or text or html:
+            parse_text = section_text or text or BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+            parsed = parse_okx_cny_prices_from_text(parse_text)
             raw_prices = parsed["raw_prices"]
             if len(raw_prices) >= 3:
                 debug = {
@@ -744,17 +843,19 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                     "raw_prices": raw_prices,
                     "fetch_mode": "playwright",
                     "source_url": url,
-                    "raw_text_excerpt": (section_text or text)[:1200],
+                    "raw_text_excerpt": parse_text[:1200],
+                    "body_text_length": len(text or ""),
+                    "html_length": len(html or ""),
                     "normalized_text_excerpt": parsed["normalized_text_excerpt"],
                     "selector_used": selector_used,
                     "section_detected": parsed["section_detected"],
                     "parser_patterns_used": parsed["parser_patterns_used"],
-                    "error_reason": None,
+                    "error_reason": "; ".join(page_text_errors) if page_text_errors else None,
                     "playwright_error": str(exc),
                     "validation": {
                         "url_contains_buy_usdt": "buy-usdt" in url,
-                        "contains_usdt": "USDT" in (section_text or text),
-                        "contains_cny": "CNY" in (section_text or text),
+                        "contains_usdt": "USDT" in parse_text,
+                        "contains_cny": "CNY" in parse_text,
                 "price_method": "average first 5 normalized text prices near CNY/USDT context after Playwright error",
                         "minimum_sample_count": 3,
                     },
@@ -768,13 +869,15 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                     "raw_prices": raw_prices,
                     "fetch_mode": "playwright",
                     "source_url": url,
-                    "raw_text_excerpt": (section_text or text)[:1200],
+                    "raw_text_excerpt": parse_text[:1200],
+                    "body_text_length": len(text or ""),
+                    "html_length": len(html or ""),
                     "normalized_text_excerpt": parsed["normalized_text_excerpt"],
                     "selector_used": selector_used,
                     "section_detected": parsed["section_detected"],
                     "parser_patterns_used": parsed["parser_patterns_used"],
                     "error": str(exc),
-                    "error_reason": "fewer than 3 qualified OKX CNY/USDT prices found after Playwright error",
+                    "error_reason": f"fewer than 3 qualified OKX CNY/USDT prices found after Playwright error: {exc}",
                 },
             )
         return _failed_with_previous(
@@ -785,6 +888,9 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                 "raw_prices": [],
                 "fetch_mode": "playwright",
                 "source_url": url,
+                "body_text_length": len(text or ""),
+                "html_length": len(html or ""),
+                "normalized_text_excerpt": "",
                 "error": str(exc),
                 "error_reason": "OKX Playwright text unavailable or parser found fewer than 3 prices",
             },
