@@ -129,9 +129,9 @@ def parse_beijingrtj_gold_prices(text: str) -> dict[str, Any]:
             if 500 <= float(value) <= 1500
         ]
         return {
-            "buy_price": sale,
-            "sell_price": repurchase,
-            "mid_price": (sale + repurchase) / 2,
+            "buy_price": repurchase,
+            "sell_price": sale,
+            "mid_price": (repurchase + sale) / 2,
             "raw_prices": raw_prices[:12],
             "parser_patterns_used": ["beijingrtj_gold_row_repurchase_sale"],
             "raw_text_excerpt": normalized[max(row_match.start() - 80, 0) : row_match.end() + 160],
@@ -687,8 +687,10 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
         ("merchant_quote_near_price", re.compile(r"(?:\u5546\u5bb6\u5831\u50f9|\u5546\u5bb6\u62a5\u4ef7|\u5831\u50f9|\u62a5\u4ef7).{0,40}?(6\.\d{2,4})(?!\d)")),
         ("unit_price_label", re.compile(r"\u55ae\u50f9\s*(6\.\d{2,4})(?!\d)|\u5355\u4ef7\s*(6\.\d{2,4})(?!\d)")),
         ("price_label", re.compile(r"\u50f9\u683c\s*(6\.\d{2,4})(?!\d)|\u4ef7\u683c\s*(6\.\d{2,4})(?!\d)")),
-        ("price_near_cny_forward", re.compile(r"(?<!\d)(6\.\d{2,4})(?!\d).{0,20}?CNY", re.I)),
-        ("price_near_cny_backward", re.compile(r"CNY.{0,20}?(6\.\d{2,4})(?!\d)", re.I)),
+        ("price_near_cny_forward", re.compile(r"(?<!\d)(6\.\d{2,4})(?!\d).{0,30}?CNY", re.I)),
+        ("price_near_cny_backward", re.compile(r"CNY.{0,30}?(6\.\d{2,4})(?!\d)", re.I)),
+        ("price_near_usdt_forward", re.compile(r"(?<!\d)(6\.\d{2,4})(?!\d).{0,30}?USDT", re.I)),
+        ("price_near_usdt_backward", re.compile(r"USDT.{0,30}?(6\.\d{2,4})(?!\d)", re.I)),
     ]
     raw_prices: list[float] = []
     parser_patterns_used: list[str] = []
@@ -720,7 +722,7 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
         "raw_prices": raw_prices[:5],
         "sample_count": len(raw_prices[:5]),
         "parser_patterns_used": parser_patterns_used,
-        "normalized_text_excerpt": section[:1500],
+        "normalized_text_excerpt": section[:3000],
         "section_detected": section_detected,
     }
 
@@ -742,6 +744,20 @@ async def _okx_page_text_and_html(page) -> tuple[str, str, list[str]]:
     return body_text or "", html or "", errors
 
 
+def _okx_debug_flags(text: str, html: str) -> dict[str, bool]:
+    combined = f"{text or ''} {html or ''}"
+    lowered = combined.lower()
+    return {
+        "contains_cny": "CNY" in combined,
+        "contains_usdt": "USDT" in combined,
+        "contains_6xx_price": bool(re.search(r"(?<!\d)6\.\d{2,4}(?!\d)", combined)),
+        "contains_captcha": "captcha" in lowered or "\u9a57\u8b49\u78bc" in combined or "\u9a8c\u8bc1\u7801" in combined,
+        "contains_verify": "verify" in lowered or "\u9a57\u8b49" in combined or "\u9a8c\u8bc1" in combined,
+        "contains_security": "security" in lowered or "\u5b89\u5168" in combined,
+        "contains_cloudflare": "cloudflare" in lowered,
+    }
+
+
 async def fetch_okx(previous: Quote | None = None) -> Quote:
     key = "okx_cny_usdt"
     url = "https://www.okx.com/zh-hant/p2p-block/cny/buy-usdt"
@@ -757,16 +773,23 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
     section_text = ""
     selector_used = "body visible text regex"
     page_text_errors: list[str] = []
+    page_url_after_goto = None
+    page_title = None
     page = None
     try:
         async with _PLAYWRIGHT_LOCK:
             page = await _new_low_memory_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page_url_after_goto = page.url
+            try:
+                page_title = await page.title()
+            except Exception:
+                page_title = None
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=5000)
             except Exception:
                 pass
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(5000)
             await page.mouse.wheel(0, 900)
             await page.wait_for_timeout(1000)
             text, html, page_text_errors = await _okx_page_text_and_html(page)
@@ -806,14 +829,18 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
             "raw_prices": raw_prices,
             "fetch_mode": "playwright",
             "source_url": url,
+            "page_url_after_goto": page_url_after_goto,
+            "page_title": page_title,
             "raw_text_excerpt": parse_text[:1000],
             "body_text_length": len(text or ""),
             "html_length": len(html or ""),
+            "html_excerpt": (html or "")[:3000],
             "normalized_text_excerpt": parsed["normalized_text_excerpt"],
             "selector_used": selector_used,
             "section_detected": section_detected,
             "parser_patterns_used": parsed["parser_patterns_used"],
             "error_reason": "; ".join(page_text_errors) if page_text_errors else None,
+            **_okx_debug_flags(parse_text, html),
             "validation": {
                 "url_contains_buy_usdt": "buy-usdt" in url,
                 "contains_usdt": "USDT" in parse_text,
@@ -843,15 +870,19 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                     "raw_prices": raw_prices,
                     "fetch_mode": "playwright",
                     "source_url": url,
+                    "page_url_after_goto": page_url_after_goto,
+                    "page_title": page_title,
                     "raw_text_excerpt": parse_text[:1200],
                     "body_text_length": len(text or ""),
                     "html_length": len(html or ""),
+                    "html_excerpt": (html or "")[:3000],
                     "normalized_text_excerpt": parsed["normalized_text_excerpt"],
                     "selector_used": selector_used,
                     "section_detected": parsed["section_detected"],
                     "parser_patterns_used": parsed["parser_patterns_used"],
                     "error_reason": "; ".join(page_text_errors) if page_text_errors else None,
                     "playwright_error": str(exc),
+                    **_okx_debug_flags(parse_text, html),
                     "validation": {
                         "url_contains_buy_usdt": "buy-usdt" in url,
                         "contains_usdt": "USDT" in parse_text,
@@ -869,15 +900,19 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                     "raw_prices": raw_prices,
                     "fetch_mode": "playwright",
                     "source_url": url,
+                    "page_url_after_goto": page_url_after_goto,
+                    "page_title": page_title,
                     "raw_text_excerpt": parse_text[:1200],
                     "body_text_length": len(text or ""),
                     "html_length": len(html or ""),
+                    "html_excerpt": (html or "")[:3000],
                     "normalized_text_excerpt": parsed["normalized_text_excerpt"],
                     "selector_used": selector_used,
                     "section_detected": parsed["section_detected"],
                     "parser_patterns_used": parsed["parser_patterns_used"],
                     "error": str(exc),
                     "error_reason": f"fewer than 3 qualified OKX CNY/USDT prices found after Playwright error: {exc}",
+                    **_okx_debug_flags(parse_text, html),
                 },
             )
         return _failed_with_previous(
@@ -888,10 +923,14 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                 "raw_prices": [],
                 "fetch_mode": "playwright",
                 "source_url": url,
+                "page_url_after_goto": page_url_after_goto,
+                "page_title": page_title,
                 "body_text_length": len(text or ""),
                 "html_length": len(html or ""),
+                "html_excerpt": (html or "")[:3000],
                 "normalized_text_excerpt": "",
                 "error": str(exc),
                 "error_reason": "OKX Playwright text unavailable or parser found fewer than 3 prices",
+                **_okx_debug_flags(text, html),
             },
         )

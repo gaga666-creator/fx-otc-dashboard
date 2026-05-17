@@ -658,7 +658,7 @@ function RouteCard({ route }) {
 function GoldReference({ data }) {
   const items = [
     {
-      label: "黃金9999",
+      label: "\u5927\u9678\u9ec3\u91d1",
       buy: pickQuote(data, "gold_9999_buy_cny_g"),
       sell: pickQuote(data, "gold_9999_sell_cny_g"),
       mid: pickQuote(data, "gold_9999_mid_cny_g"),
