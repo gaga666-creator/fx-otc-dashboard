@@ -308,8 +308,8 @@ input {
 
 .best-summary-card {
   display: grid;
-  grid-template-columns: minmax(14rem, 1fr) minmax(0, 2.35fr);
-  align-items: start;
+  grid-template-columns: minmax(13rem, 0.88fr) minmax(0, 2.45fr);
+  align-items: stretch;
   gap: 0.8rem 1rem;
   margin-bottom: 1.45rem;
   border: 1px solid rgba(148, 163, 184, 0.16);
@@ -357,6 +357,9 @@ input {
 }
 
 .best-summary-main {
+  display: grid;
+  align-content: space-between;
+  gap: 0.7rem;
   min-width: 0;
 }
 
@@ -378,6 +381,7 @@ input {
 .best-summary-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
   gap: 0.58rem;
 }
 
@@ -580,6 +584,9 @@ input {
 }
 
 .decision-metric {
+  display: grid;
+  align-content: space-between;
+  gap: 0.42rem;
   min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.12);
   border-radius: 0.75rem;
@@ -692,7 +699,10 @@ input {
 }
 
 .route-card-best {
-  border-color: rgba(250, 204, 21, 0.34);
+  border-color: transparent;
+  background:
+    linear-gradient(180deg, rgba(13, 17, 26, 0.96), rgba(7, 11, 18, 0.96)) padding-box,
+    linear-gradient(135deg, rgba(34, 211, 238, 0.38), rgba(52, 211, 153, 0.26), rgba(250, 204, 21, 0.28)) border-box;
 }
 
 .route-card-topline {
@@ -703,7 +713,7 @@ input {
 }
 
 .route-card-best .route-card-topline {
-  background: linear-gradient(90deg, #facc15, rgba(94, 234, 212, 0.7));
+  background: transparent;
 }
 
 .route-card .route-metrics {

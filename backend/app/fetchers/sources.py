@@ -62,13 +62,14 @@ def _failed_with_previous(key: str, previous: Quote | None, debug: dict[str, Any
     meta = SOURCE_META[key]
     merged_debug = dict(previous.debug if previous else {})
     merged_debug.update(debug or {})
+    source_url = (debug or {}).get("source_url") or (previous.source_url if previous else None) or meta["source_url"]
     if previous and previous.value is not None and previous.last_success_time:
         return Quote(
             key=key,
             value=previous.value,
             status="stale",
             source=meta["source"],
-            source_url=previous.source_url or meta["source_url"],
+            source_url=source_url,
             last_success_time=previous.last_success_time,
             debug=merged_debug,
         )
@@ -77,7 +78,7 @@ def _failed_with_previous(key: str, previous: Quote | None, debug: dict[str, Any
         value=None,
         status="unavailable",
         source=meta["source"],
-        source_url=meta["source_url"],
+        source_url=source_url,
         last_success_time=None,
         debug=merged_debug,
     )
@@ -102,6 +103,78 @@ def _excerpt_after_label(text: str, label: str, length: int = 220) -> str:
     if index < 0:
         return text[:length]
     return text[index : index + length]
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("\r\n", " ").replace("\n", " ").replace("\t", " ")).strip()
+
+
+def parse_beijingrtj_gold_prices(text: str) -> dict[str, Any]:
+    normalized = _compact_text(text)
+    row_match = re.search(
+        r"(?:商品\s*)?(?:回购|回購)\s*(?:销售|銷售)\s*(?:时间|時間)\s*黄金\s*(\d{3,5}(?:\.\d{1,4})?)\s*(\d{3,5}(?:\.\d{1,4})?)",
+        normalized,
+    )
+    if not row_match:
+        row_match = re.search(
+            r"黄金\s*(\d{3,5}(?:\.\d{1,4})?)\s*(\d{3,5}(?:\.\d{1,4})?)\s*\d{1,2}:\d{2}",
+            normalized,
+        )
+    if row_match:
+        repurchase = float(row_match.group(1))
+        sale = float(row_match.group(2))
+        raw_prices = [
+            float(value)
+            for value in re.findall(r"(?<!\d)(\d{3,5}(?:\.\d{1,4})?)(?!\d)", normalized)
+            if 500 <= float(value) <= 1500
+        ]
+        return {
+            "buy_price": sale,
+            "sell_price": repurchase,
+            "mid_price": (sale + repurchase) / 2,
+            "raw_prices": raw_prices[:12],
+            "parser_patterns_used": ["beijingrtj_gold_row_repurchase_sale"],
+            "raw_text_excerpt": normalized[max(row_match.start() - 80, 0) : row_match.end() + 160],
+        }
+
+    patterns = {
+        "buy_price": [
+            r"(?:黄金买价|黃金買價|买价|買價|销售价|銷售價|出售价|出售價)\D{0,24}(\d{3,5}(?:\.\d{1,4})?)",
+            r"(?:销售|銷售|出售)\D{0,16}(\d{3,5}(?:\.\d{1,4})?)",
+        ],
+        "sell_price": [
+            r"(?:黄金卖价|黃金賣價|卖价|賣價|回购价|回購價|回收价|回收價)\D{0,24}(\d{3,5}(?:\.\d{1,4})?)",
+            r"(?:回购|回購|回收)\D{0,16}(\d{3,5}(?:\.\d{1,4})?)",
+        ],
+    }
+    parsed: dict[str, float | None] = {"buy_price": None, "sell_price": None}
+    used_patterns: list[str] = []
+    for key, key_patterns in patterns.items():
+        for pattern in key_patterns:
+            match = re.search(pattern, normalized)
+            if not match:
+                continue
+            price = float(match.group(1))
+            if 500 <= price <= 1500:
+                parsed[key] = price
+                used_patterns.append(pattern)
+                break
+
+    raw_prices = [
+        float(value)
+        for value in re.findall(r"(?<!\d)(\d{3,5}(?:\.\d{1,4})?)(?!\d)", normalized)
+        if 500 <= float(value) <= 1500
+    ]
+    buy = parsed["buy_price"]
+    sell = parsed["sell_price"]
+    return {
+        "buy_price": buy,
+        "sell_price": sell,
+        "mid_price": (buy + sell) / 2 if buy is not None and sell is not None else None,
+        "raw_prices": raw_prices[:12],
+        "parser_patterns_used": used_patterns,
+        "raw_text_excerpt": normalized[:500],
+    }
 
 
 async def _close_shared_playwright(delay: float = 2.0) -> None:
@@ -309,23 +382,24 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
     errors: list[str] = []
     text = ""
     mode = "httpx"
+    parsed: dict[str, Any] = {}
     try:
         headers = {"User-Agent": "Mozilla/5.0 FX OTC Dashboard"}
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True, headers=headers) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             text = BeautifulSoup(resp.text, "lxml").get_text("\n", strip=True)
-        values = _numbers_after_label(text, "暺?9999")
-        if len(values) < 2:
-            raise ValueError("gold9999 row not found in static HTML")
+        parsed = parse_beijingrtj_gold_prices(text)
+        if parsed.get("buy_price") is None or parsed.get("sell_price") is None:
+            raise ValueError("beijingrtj gold buy/sell price not found in static HTML")
     except Exception as exc:
         errors.append(f"httpx: {exc}")
         try:
             mode = "playwright"
             text = await _playwright_body_text(url)
-            values = _numbers_after_label(text, "暺?9999")
-            if len(values) < 2:
-                raise ValueError("gold9999 row not found in rendered page")
+            parsed = parse_beijingrtj_gold_prices(text)
+            if parsed.get("buy_price") is None or parsed.get("sell_price") is None:
+                raise ValueError("beijingrtj gold buy/sell price not found in rendered page")
         except Exception as render_exc:
             errors.append(f"playwright: {render_exc}")
             return _failed_group(
@@ -333,27 +407,29 @@ async def fetch_gold_9999(previous: dict[str, Quote] | None = None) -> dict[str,
                 previous,
                 {
                     "error": "; ".join(errors),
-                    "error_reason": "gold9999 row not found or Playwright unavailable",
-                    "raw_text_excerpt": _excerpt_after_label(text, "暺?9999", 500) if text else "",
+                    "error_reason": "beijingrtj gold buy/sell price not found or Playwright unavailable",
+                    "raw_text_excerpt": parsed.get("raw_text_excerpt") or _compact_text(text)[:500] if text else "",
+                    "raw_prices": parsed.get("raw_prices", []),
+                    "buy_price": parsed.get("buy_price"),
+                    "sell_price": parsed.get("sell_price"),
+                    "mid_price": parsed.get("mid_price"),
                     "fetch_mode": mode,
                     "source_url": url,
                 },
             )
 
-    # Row order on quoteh5 is repurchase/sale/high/low. For user-facing trade flow,
-    # "buy" means the customer buy/sale price, and "sell" means repurchase price.
-    sell, buy = values[0], values[1]
-    mid = (buy + sell) / 2
+    buy = parsed["buy_price"]
+    sell = parsed["sell_price"]
+    mid = parsed["mid_price"]
     debug = {
         "buy_price": buy,
         "sell_price": sell,
-        "raw_prices": values[:4],
-        "parsed_row": "暺?9999",
-        "price_mapping": {
-            "raw_prices[0]": "repurchase_price / user_sell_price",
-            "raw_prices[1]": "sale_price / user_buy_price",
-        },
-        "raw_text_excerpt": _excerpt_after_label(text, "暺?9999"),
+        "mid_price": mid,
+        "raw_prices": parsed.get("raw_prices", []),
+        "parsed_row": "beijingrtj gold buy/sell labels",
+        "parser_patterns_used": parsed.get("parser_patterns_used", []),
+        "raw_text_excerpt": parsed.get("raw_text_excerpt") or _compact_text(text)[:500],
+        "error_reason": None,
         "fetch_mode": mode,
         "source_url": url,
     }
@@ -411,12 +487,19 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
                 debug = {
                     "fallback_from": url,
                     "fallback_errors": errors,
+                    "fallback_used": True,
                     "provider": "gold-api.com",
                     "raw_price": data.get("price"),
+                    "buy_price": None,
+                    "sell_price": None,
+                    "mid_price": mid_usd,
+                    "mid_price_cny_g": mid_cny,
                     "official_usd_cny": official_usd_cny,
+                    "raw_text_excerpt": "",
                     "raw_payload_excerpt": str(data)[:500],
                     "fetch_mode": mode,
                     "source_url": fallback_url,
+                    "error_reason": "fallback API has mid price only",
                     "note": "fallback API provides mid price only; buy/sell are unavailable",
                 }
                 return {
@@ -451,6 +534,10 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
                     {
                         "error": "; ".join(errors),
                         "error_reason": "wfbullion row not found and Gold-API fallback failed",
+                        "buy_price": None,
+                        "sell_price": None,
+                        "mid_price": None,
+                        "fallback_used": False,
                         "raw_text_excerpt": _excerpt_after_label(text, "倫敦金", 500) if text else "",
                         "fetch_mode": mode,
                         "source_url": fallback_url,
@@ -465,6 +552,11 @@ async def fetch_london_gold(previous: dict[str, Quote] | None = None, official_u
     debug = {
         "buy_usd_oz": buy_usd,
         "sell_usd_oz": sell_usd,
+        "buy_price": buy_usd,
+        "sell_price": sell_usd,
+        "mid_price": mid_usd,
+        "fallback_used": False,
+        "error_reason": None,
         "official_usd_cny": official_usd_cny,
         "raw_prices": values[:4],
         "parsed_row": "倫敦金",
@@ -491,6 +583,10 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
     section = normalized
     section_detected = "body_text"
     header_markers = [
+        "\u5546\u5bb6\u5831\u50f9",
+        "\u5546\u5bb6\u62a5\u4ef7",
+        "\u8cb7 USDT",
+        "\u4e70 USDT",
         "\u5546\u5bb6 \u55ae\u50f9 \u6578\u91cf/\u9650\u984d \u652f\u4ed8\u65b9\u5f0f",
         "\u5546\u5bb6 \u5355\u4ef7 \u6570\u91cf/\u9650\u989d \u652f\u4ed8\u65b9\u5f0f",
         "\u5546\u5bb6 \u55ae\u50f9",
@@ -518,6 +614,8 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
     parser_patterns: list[tuple[str, re.Pattern[str]]] = [
         ("price_before_cny", re.compile(r"(?<!\d)(6\.\d{2,4})\s*CNY", re.I)),
         ("cny_before_price", re.compile(r"CNY\s*(6\.\d{2,4})(?!\d)", re.I)),
+        ("buy_usdt_near_price", re.compile(r"(?:\u8cb7\s*USDT|\u4e70\s*USDT|USDT).{0,40}?(6\.\d{2,4})(?!\d)", re.I)),
+        ("merchant_quote_near_price", re.compile(r"(?:\u5546\u5bb6\u5831\u50f9|\u5546\u5bb6\u62a5\u4ef7|\u5831\u50f9|\u62a5\u4ef7).{0,40}?(6\.\d{2,4})(?!\d)")),
         ("unit_price_label", re.compile(r"\u55ae\u50f9\s*(6\.\d{2,4})(?!\d)|\u5355\u4ef7\s*(6\.\d{2,4})(?!\d)")),
         ("price_label", re.compile(r"\u50f9\u683c\s*(6\.\d{2,4})(?!\d)|\u4ef7\u683c\s*(6\.\d{2,4})(?!\d)")),
         ("price_near_cny_forward", re.compile(r"(?<!\d)(6\.\d{2,4})(?!\d).{0,20}?CNY", re.I)),
@@ -544,14 +642,14 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
             seen_spans.add(span)
             if pattern_name not in parser_patterns_used:
                 parser_patterns_used.append(pattern_name)
-            if len(raw_prices) >= 10:
+            if len(raw_prices) >= 5:
                 break
-        if len(raw_prices) >= 10:
+        if len(raw_prices) >= 5:
             break
 
     return {
-        "raw_prices": raw_prices[:10],
-        "sample_count": len(raw_prices[:10]),
+        "raw_prices": raw_prices[:5],
+        "sample_count": len(raw_prices[:5]),
         "parser_patterns_used": parser_patterns_used,
         "normalized_text_excerpt": section[:1200],
         "section_detected": section_detected,
@@ -560,7 +658,7 @@ def parse_okx_cny_prices_from_text(text: str) -> dict[str, Any]:
 
 async def fetch_okx(previous: Quote | None = None) -> Quote:
     key = "okx_cny_usdt"
-    url = "https://www.okx.com/zh-hant/p2p-markets/cny/buy-usdt"
+    url = "https://www.okx.com/zh-hant/p2p-block/cny/buy-usdt"
     if os.getenv("OKX_PLAYWRIGHT_ENABLED", "true").lower() not in {"1", "true", "yes"}:
         return _failed_with_previous(key, previous, {"fetch_mode": "disabled", "source_url": url})
     try:
@@ -622,7 +720,7 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                 "url_contains_buy_usdt": "buy-usdt" in url,
                 "contains_usdt": "USDT" in section_text,
                 "contains_cny": "CNY" in section_text,
-                "price_method": "average first 10 normalized text prices near CNY",
+                "price_method": "average first 5 normalized text prices near CNY/USDT context",
                 "minimum_sample_count": 3,
             },
         }
@@ -657,11 +755,11 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                         "url_contains_buy_usdt": "buy-usdt" in url,
                         "contains_usdt": "USDT" in (section_text or text),
                         "contains_cny": "CNY" in (section_text or text),
-                        "price_method": "average first 10 normalized text prices near CNY after Playwright error",
+                "price_method": "average first 5 normalized text prices near CNY/USDT context after Playwright error",
                         "minimum_sample_count": 3,
                     },
                 }
-                return _normal(key, mean(raw_prices[:10]), debug, source_url=url)
+                return _normal(key, mean(raw_prices[:5]), debug, source_url=url)
             return _failed_with_previous(
                 key,
                 previous,

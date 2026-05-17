@@ -52,7 +52,7 @@ SOURCE_META: dict[str, dict[str, str]] = {
     },
     "okx_cny_usdt": {
         "source": "OKX P2P buy-usdt",
-        "source_url": "https://www.okx.com/zh-hant/p2p-markets/cny/buy-usdt",
+        "source_url": "https://www.okx.com/zh-hant/p2p-block/cny/buy-usdt",
     },
     "usdt_usd_ref": {
         "source": "Coinbase USDT/USD",
@@ -60,15 +60,15 @@ SOURCE_META: dict[str, dict[str, str]] = {
     },
     "gold_9999_buy_cny_g": {
         "source": "China Gold 9999",
-        "source_url": "https://i.jzj9999.com/quoteh5",
+        "source_url": "http://beijingrtj.com/",
     },
     "gold_9999_sell_cny_g": {
         "source": "China Gold 9999",
-        "source_url": "https://i.jzj9999.com/quoteh5",
+        "source_url": "http://beijingrtj.com/",
     },
     "gold_9999_mid_cny_g": {
         "source": "China Gold 9999",
-        "source_url": "https://i.jzj9999.com/quoteh5",
+        "source_url": "http://beijingrtj.com/",
     },
     "london_gold_buy_usd_oz": {
         "source": "London Gold XAU/USD",

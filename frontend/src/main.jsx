@@ -309,11 +309,11 @@ function RouteStatusDot({ status }) {
 
 function MarketTape({ data }) {
   const items = [
-    ["官方", "USD/CNY", pickQuote(data, "official_usd_cny"), "https://www.pbc.gov.cn/zhengcehuobisi/125207/125217/125925/index.html"],
-    ["OKX", "CNY/USDT", pickQuote(data, "okx_cny_usdt"), "https://www.okx.com/zh-hant/p2p-markets/cny/buy-usdt"],
-    ["台銀 USD", "USD/TWD", pickQuote(data, "usd_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
+    ["??", "USD/CNY", pickQuote(data, "official_usd_cny"), "https://www.pbc.gov.cn/zhengcehuobisi/125207/125217/125925/index.html"],
+    ["OKX", "CNY/USDT", pickQuote(data, "okx_cny_usdt"), "https://www.okx.com/zh-hant/p2p-block/cny/buy-usdt"],
+    ["?? USD", "USD/TWD", pickQuote(data, "usd_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
     ["MAX", "TWD/USDT", pickQuote(data, "max_usdt_twd"), "https://max.maicoin.com/markets/usdttwd"],
-    ["台銀 CNY", "CNY/TWD", pickQuote(data, "cny_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
+    ["?? CNY", "CNY/TWD", pickQuote(data, "cny_twd_mid"), "https://rate.bot.com.tw/xrt?Lang=zh-TW"],
     ["Coinbase", "USDT/USD", pickQuote(data, "usdt_usd_ref"), "https://exchange.coinbase.com/trade/USDT-USD"],
   ];
   return (
@@ -339,19 +339,18 @@ function BestRouteSummaryCard({ decision }) {
   return (
     <section className="best-summary-card">
       <div className="best-summary-main">
-        <span className="best-summary-eyebrow">最佳路徑</span>
         <div className="best-summary-title">
           <RouteStatusDot status={best.status || { tone: "insufficient" }} />
           <h2>{best.name || "--"}</h2>
           <span className="route-mini-badge">{best.badge || "--"}</span>
         </div>
+        <div className="best-summary-time">更新時間 {formatDisplayTime(decision.lastUpdated)}</div>
       </div>
       <div className="best-summary-metrics">
         <DecisionMetric label="理論成本" value={formatRate(best.cost)} />
         <DecisionMetric label="預估獲利 TWD/USDT" value={formatSpreadValue(best.spread)} tone={best.spread > 0 ? "positive" : "negative"} dominant />
         <DecisionMetric label="套利空間" value={formatPercent(best.arbPct)} tone={best.arbPct > 0 ? "positive" : "negative"} />
       </div>
-      <div className="best-summary-time">更新時間 {formatDisplayTime(decision.lastUpdated)}</div>
     </section>
   );
 }
@@ -663,7 +662,7 @@ function GoldReference({ data }) {
       buy: pickQuote(data, "gold_9999_buy_cny_g"),
       sell: pickQuote(data, "gold_9999_sell_cny_g"),
       mid: pickQuote(data, "gold_9999_mid_cny_g"),
-      href: "https://i.jzj9999.com/quoteh5",
+      href: "http://beijingrtj.com/",
     },
     {
       label: "倫敦金",
@@ -682,9 +681,9 @@ function GoldReference({ data }) {
             <span>{label}</span>
           </div>
           <div className="gold-card-prices">
-            <span>買 <b>{formatRate(buy.value)}</b></span>
-            <span>賣 <b>{formatRate(sell.value)}</b></span>
-            <span>中 <b>{formatRate(mid.value)}</b> <em>CNY/g</em></span>
+            <span>買價 <b>{formatRate(buy.value)}</b></span>
+            <span>賣價 <b>{formatRate(sell.value)}</b></span>
+            <span>中價 <b>{formatRate(mid.value)}</b> <em>CNY/g</em></span>
           </div>
         </a>
       ))}
@@ -695,7 +694,7 @@ function GoldReference({ data }) {
 function RouteComparison({ decision, data }) {
   const orderedRoutes = [...decision.routes].sort((a, b) => (a.key === "usd" ? -1 : b.key === "usd" ? 1 : 0));
   return (
-    <Section id="s2" title="路徑比較" className="route-section">
+    <Section id="s2" title="理論成本" className="route-section">
       <div className="route-cards-grid">
         {orderedRoutes.map((route) => (
           <RouteCard key={route.key} route={route} />
@@ -817,7 +816,6 @@ function App() {
         <GoldReference data={data} />
       </Section>
       <Calculator data={data} />
-      <footer className="py-6 text-xs text-white/35">資料僅供參考。第三方來源 unavailable 時不以 mock 價格替代。</footer>
     </Shell>
   );
 }
