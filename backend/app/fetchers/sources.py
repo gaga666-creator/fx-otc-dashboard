@@ -758,6 +758,15 @@ def _okx_debug_flags(text: str, html: str) -> dict[str, bool]:
     }
 
 
+def _okx_region_or_navigation_only(text: str, parsed: dict[str, Any]) -> bool:
+    normalized = parsed.get("normalized_text_excerpt", "") or _normalize_okx_text(text)
+    lowered = normalized.lower()
+    region_blocked = "looks like you're in the united states" in lowered or "switch to the united states site" in lowered
+    navigation_only = parsed.get("section_detected") == "body_text" and not parsed.get("raw_prices")
+    c2c_absent = not any(marker in normalized for marker in ["\u5546\u5bb6 \u55ae\u50f9", "\u5546\u5bb6 \u5355\u4ef7", "\u5546\u5bb6\u5831\u50f9", "\u5546\u5bb6\u62a5\u4ef7"])
+    return region_blocked or (navigation_only and c2c_absent)
+
+
 async def fetch_okx(previous: Quote | None = None) -> Quote:
     key = "okx_cny_usdt"
     url = "https://www.okx.com/zh-hant/p2p-block/cny/buy-usdt"
@@ -819,6 +828,8 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
             await _close_shared_playwright(0)
         parse_text = section_text or text or BeautifulSoup(html, "lxml").get_text(" ", strip=True)
         parsed = parse_okx_cny_prices_from_text(parse_text)
+        if _okx_region_or_navigation_only(parse_text, parsed):
+            raise ValueError("OKX quote table unavailable in Render region; page shows region/navigation content only")
         raw_prices: list[float] = parsed["raw_prices"]
         if len(raw_prices) < 3:
             raise ValueError("no visible CNY seller prices found")
@@ -864,40 +875,49 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
             parse_text = section_text or text or BeautifulSoup(html, "lxml").get_text(" ", strip=True)
             parsed = parse_okx_cny_prices_from_text(parse_text)
             raw_prices = parsed["raw_prices"]
+            okx_region_or_navigation_only = _okx_region_or_navigation_only(parse_text, parsed)
             if len(raw_prices) >= 3:
-                debug = {
-                    "sample_count": parsed["sample_count"],
-                    "raw_prices": raw_prices,
-                    "fetch_mode": "playwright",
-                    "source_url": url,
-                    "page_url_after_goto": page_url_after_goto,
-                    "page_title": page_title,
-                    "raw_text_excerpt": parse_text[:1200],
-                    "body_text_length": len(text or ""),
-                    "html_length": len(html or ""),
-                    "html_excerpt": (html or "")[:3000],
-                    "normalized_text_excerpt": parsed["normalized_text_excerpt"],
-                    "selector_used": selector_used,
-                    "section_detected": parsed["section_detected"],
-                    "parser_patterns_used": parsed["parser_patterns_used"],
-                    "error_reason": "; ".join(page_text_errors) if page_text_errors else None,
-                    "playwright_error": str(exc),
-                    **_okx_debug_flags(parse_text, html),
-                    "validation": {
-                        "url_contains_buy_usdt": "buy-usdt" in url,
-                        "contains_usdt": "USDT" in parse_text,
-                        "contains_cny": "CNY" in parse_text,
-                "price_method": "average first 5 normalized text prices near CNY/USDT context after Playwright error",
-                        "minimum_sample_count": 3,
-                    },
-                }
-                return _normal(key, mean(raw_prices[:5]), debug, source_url=url)
+                if okx_region_or_navigation_only:
+                    raw_prices = []
+                else:
+                    debug = {
+                        "sample_count": parsed["sample_count"],
+                        "raw_prices": raw_prices,
+                        "fetch_mode": "playwright",
+                        "source_url": url,
+                        "page_url_after_goto": page_url_after_goto,
+                        "page_title": page_title,
+                        "raw_text_excerpt": parse_text[:1200],
+                        "body_text_length": len(text or ""),
+                        "html_length": len(html or ""),
+                        "html_excerpt": (html or "")[:3000],
+                        "normalized_text_excerpt": parsed["normalized_text_excerpt"],
+                        "selector_used": selector_used,
+                        "section_detected": parsed["section_detected"],
+                        "parser_patterns_used": parsed["parser_patterns_used"],
+                        "error_reason": "; ".join(page_text_errors) if page_text_errors else None,
+                        "playwright_error": str(exc),
+                        **_okx_debug_flags(parse_text, html),
+                        "validation": {
+                            "url_contains_buy_usdt": "buy-usdt" in url,
+                            "contains_usdt": "USDT" in parse_text,
+                            "contains_cny": "CNY" in parse_text,
+                            "price_method": "average first 5 normalized text prices near CNY/USDT context after Playwright error",
+                            "minimum_sample_count": 3,
+                        },
+                    }
+                    return _normal(key, mean(raw_prices[:5]), debug, source_url=url)
+            error_reason = (
+                "OKX quote table unavailable in Render region; page shows region/navigation content only"
+                if okx_region_or_navigation_only
+                else f"fewer than 3 qualified OKX CNY/USDT prices found after Playwright error: {exc}"
+            )
             return _failed_with_previous(
                 key,
                 previous,
                 {
-                    "sample_count": parsed["sample_count"],
-                    "raw_prices": raw_prices,
+                    "sample_count": 0 if okx_region_or_navigation_only else parsed["sample_count"],
+                    "raw_prices": [] if okx_region_or_navigation_only else raw_prices,
                     "fetch_mode": "playwright",
                     "source_url": url,
                     "page_url_after_goto": page_url_after_goto,
@@ -911,7 +931,7 @@ async def fetch_okx(previous: Quote | None = None) -> Quote:
                     "section_detected": parsed["section_detected"],
                     "parser_patterns_used": parsed["parser_patterns_used"],
                     "error": str(exc),
-                    "error_reason": f"fewer than 3 qualified OKX CNY/USDT prices found after Playwright error: {exc}",
+                    "error_reason": error_reason,
                     **_okx_debug_flags(parse_text, html),
                 },
             )
